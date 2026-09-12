@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.pytest_cache/
+.ipynb_checkpoints/
+.idea/
+.vscode/
+*.log
+
+# 开发期临时探测脚本与输出（仅根目录，不影响 app/ 下的 __init__.py）
+/_*.py
+/_*.txt
+/_*.json
+/ompressed
+.workbuddy/

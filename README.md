@@ -118,7 +118,7 @@ app/
 │   ├── chuanqiking.py      # api.chuanqiking.com —— 分分彩 / 五分彩 / 时时彩
 │   └── __init__.py         # 适配器注册表（导入期自检配置与适配器是否对齐）
 ├── services/
-│   └── lottery_service.py  # 查表 -> 选适配器 -> 取数 -> TTL 缓存
+│   └── lottery_service.py  # 查表 -> 选适配器 -> 取数 -> TLRU 缓存（仅 latest）
 ├── routers/
 │   └── lottery.py          # 路由：只做参数校验
 ├── main.py                 # 应用入口：lifespan、CORS、统一错误处理
@@ -130,7 +130,7 @@ requirements.txt
 
 ## 《彩种名称表》
 
-配置在 `app/config.py` 的 `LOTTERY_TABLE`，共 **112 个彩种**（以彩种名称去重后的全量对照表）。
+配置在 `app/config.py` 的 `LOTTERY_TABLE`，共 **111 个彩种**（以彩种名称去重后的全量对照表；「幸运飞艇」pks 10057 与 168yyy 的「168幸运飞艇」`g171` 为同一彩种，已合并）。
 
 每行字段：
 
@@ -156,7 +156,7 @@ requirements.txt
 
 优先 168yyy（**一次请求同时拿到最新一期 + 下期预告 + 历史**，信息最全）→ 168 线路池 `pks` →
 chuanqiking → apiote122；若高优先级源在该彩种上实测无数据，则回退到实测可用的源。
-因此 `北京PK10` / `幸运飞艇` / `SG飞艇` / `英国乐透10` 走 `pks`，`重庆时时彩` 走 `chuanqiking`。
+因此 `北京PK10` / `SG飞艇` / `英国乐透10` 走 `pks`，`重庆时时彩` 走 `chuanqiking`。
 
 ## 上游可用性实测
 
@@ -165,11 +165,11 @@ chuanqiking → apiote122；若高优先级源在该彩种上实测无数据，�
 | source | 彩种数 | status=ok | 说明 |
 | --- | --- | --- | --- |
 | `yyy168` | 16 | **16** | gid 全表可用：101/103/107/108/109/131/132/135/170/171/172/175/200/201/202/301 |
-| `pks` | 4 | **4** | lotCode `10001`/`10057`/`10058`/`10079` 可用（`10012` 也实测可用） |
+| `pks` | 3 | **3** | lotCode `10001`/`10058`/`10079` 可用（`10012`/`10057` 也实测可用；10057 即「168幸运飞艇」，已并入 yyy168 的 `g171`） |
 | `chuanqiking` | 28 | **11** | 可用 lotCode：11/12/13/14/25/26/27/29/30/31/32；7/8/9/22/23/28 编号有效但当前无数据 |
 | `apiote122` | 64 | **3** | 可用 lotCode：10059/10064/10075（10010/10036 已由 yyy168 覆盖）；其余多为空响应 |
 
-合计 **112 个彩种中 34 个 `ok`**，10 个 `empty`，68 个 `unsupported`。
+合计 **111 个彩种中 33 个 `ok`**，10 个 `empty`，68 个 `unsupported`。
 `empty` / `unsupported` 的彩种调用会返回 502 + `upstream_no_data`（不会静默返回空数组）。
 **上游编号的有效性会随时间变化**，建议定期用 `GET /lottery` 的 `status` 复核。
 
@@ -196,7 +196,7 @@ chuanqiking → apiote122；若高优先级源在该彩种上实测无数据，�
 | JSON 解析 | `orjson.loads(response.content)`（上游响应）与 `orjson.dumps`（错误体） |
 | 连接池 | 进程内共享一个 `httpx.AsyncClient`，`max_connections=100`，应用关闭时 `aclose()` |
 | 超时 / 重试 | 超时 8 秒；每个域名重试 2 次，间隔 0.3 秒可配 |
-| 缓存 | `cachetools.TTLCache`：`latest` 3 秒、`history` 30 秒（键为 `(彩种 ID, limit)`） |
+| 缓存 | `cachetools.TLRUCache`：仅缓存 `latest`，条目过期于该彩种**下一期开奖时间**（取响应 `next.draw_time`）；下期缺失/异常时回退 3 秒，单条最长 300 秒。`history` 每次实时取上游，不缓存 |
 | 大列表裁剪 | 适配器只切出前 `limit` 条再映射，其余原始响应立即丢弃 |
 | 返回模型 | 只保留 `issue / draw_time / code / code_text / sum / sum_odd_even / sum_big_small / dragon_tiger`，不透传上游原始大 JSON |
 
@@ -234,7 +234,8 @@ pytest
 | `PKS_BASE_URLS` | 5 个 168 域名 | 线路池，按顺序重试 |
 | `CHUANQIKING_BASE_URL` | `https://api.chuanqiking.com` | 分分彩数据源 |
 | `UPSTREAM_TIMEOUT` / `UPSTREAM_RETRIES` / `UPSTREAM_RETRY_DELAY` | `8` / `2` / `0.3` | 超时与重试 |
-| `CACHE_LATEST_TTL` / `CACHE_HISTORY_TTL` | `3` / `30` | 缓存 TTL（秒） |
+| `CACHE_LATEST_TTL` | `3` | 下期开奖时间缺失/异常时的回退缓存 TTL（秒）；`history` 不缓存 |
+| `CACHE_MAX_TTL` | `300` | 单条缓存最长存活时间（秒），防御上游下期时间异常 |
 | `HISTORY_DEFAULT_LIMIT` / `HISTORY_MAX_LIMIT` | `50` / `200` | 历史条数上下限 |
 | `UPSTREAM_USE_TRUSTSTORE` | `true` | 用系统证书库替代 Python 默认 CA 包 |
 

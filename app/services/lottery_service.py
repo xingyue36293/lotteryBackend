@@ -1,4 +1,4 @@
-"""彩种业务逻辑：查表 -> 选适配器 -> 取数 -> TTL 缓存。
+"""彩种业务逻辑：查表 -> 选适配器 -> 取数 -> TLRU 缓存。
 
 这一层是路由与适配器之间的唯一桥梁：
 
@@ -6,15 +6,23 @@
 - 适配器只做「上游字段 -> 统一模型」；
 - **新增彩种不需要改这里**，只要彩种名称表里加了行，本层自动生效。
 
-缓存策略（cachetools.TTLCache，进程内）
---------------------------------------
-- ``latest``  3 秒：开奖是高频事件，缓存窗口必须远小于开奖间隔；
-- ``history`` 30 秒，键为 ``(彩种 ID, limit)``。
+缓存策略（cachetools.TLRUCache，进程内）
+------------------------------------------
+仅缓存 ``latest``，过期时间 = **该彩种下一期开奖时间**（开奖即出新数据，正好失效）：
+
+- 过期时间取响应里的 ``next.draw_time``；下期预告缺失 / 已过期 / 解析失败时
+  回退固定 ``cache_latest_ttl``（默认 3 秒）；
+- 最长存活 ``cache_max_ttl``（默认 300 秒），防御上游下期时间异常
+  （如线路池彩种数据停在旧年份、next 给到数年后）；
+- ``history`` 每次实时取上游，不缓存。
 """
 
 from __future__ import annotations
 
-from cachetools import TTLCache
+import time
+from datetime import datetime
+
+from cachetools import TLRUCache
 
 from app.adapters import BaseAdapter, get_adapter
 from app.config import LOTTERY_INDEX, LOTTERY_TABLE, LotteryConfig, SourceKey, get_settings
@@ -56,16 +64,50 @@ class UnknownLotteryError(LotteryError):
         )
 
 
-#: latest 缓存：3 秒
-LATEST_CACHE: TTLCache = TTLCache(maxsize=_settings.cache_maxsize, ttl=_settings.cache_latest_ttl)
-#: history 缓存：30 秒
-HISTORY_CACHE: TTLCache = TTLCache(maxsize=_settings.cache_maxsize, ttl=_settings.cache_history_ttl)
+def _parse_draw_time(value: str | None) -> float | None:
+    """上游时间字符串（如 ``2026-09-13 01:38:40``）-> 本地时间戳；解析失败返回 None。"""
+    if not value:
+        return None
+    text = value.strip()
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").timestamp()
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None
+
+
+def _expires_at(next_draw_time: str | None, fallback_ttl: float, now: float | None = None) -> float:
+    """缓存条目的绝对过期时间（epoch 秒）。
+
+    优先取下一期开奖时间；缺失、解析失败或已经过去时回退固定 TTL，
+    并封顶 ``cache_max_ttl``，防止上游给出异常远的下期时间导致数据长期不刷新。
+    """
+    if now is None:
+        now = time.time()
+    next_ts = _parse_draw_time(next_draw_time)
+    if next_ts is not None and next_ts > now:
+        return min(next_ts, now + _settings.cache_max_ttl)
+    return now + fallback_ttl
+
+
+def _latest_ttu(key: str, value: LatestResponse, now: float) -> float:
+    """TLRUCache 的 ttu：latest 条目过期于响应中的下一期开奖时间。"""
+    next_time = value.next.draw_time if value.next is not None else None
+    return _expires_at(next_time, _settings.cache_latest_ttl, now)
+
+
+#: latest 缓存：过期于该彩种下一期开奖时间
+LATEST_CACHE: TLRUCache[str, LatestResponse] = TLRUCache(
+    maxsize=_settings.cache_maxsize, ttu=_latest_ttu, timer=time.time
+)
 
 
 def clear_caches() -> None:
     """清空缓存（测试与运维手动刷新用）。"""
     LATEST_CACHE.clear()
-    HISTORY_CACHE.clear()
 
 
 def get_config(lottery_id: str) -> LotteryConfig:
@@ -103,16 +145,12 @@ async def get_latest(lottery_id: str) -> LatestResponse:
 
 
 async def get_history(lottery_id: str, limit: int | None = None) -> HistoryResponse:
-    """最近 limit 期历史，时间倒序。"""
+    """最近 limit 期历史，时间倒序（每次实时取上游，不缓存）。"""
     config = get_config(lottery_id)
     limit = _normalize_limit(limit)
-    key = (config.id, limit)
-    cached = HISTORY_CACHE.get(key)
-    if cached is not None:
-        return cached
 
     history = await _adapter_of(config).fetch_history(config, limit)
-    response = HistoryResponse(
+    return HistoryResponse(
         id=config.id,
         name=config.name,
         source=config.source,
@@ -120,8 +158,6 @@ async def get_history(lottery_id: str, limit: int | None = None) -> HistoryRespo
         count=len(history),
         history=history,
     )
-    HISTORY_CACHE[key] = response
-    return response
 
 
 def _normalize_limit(limit: int | None) -> int:

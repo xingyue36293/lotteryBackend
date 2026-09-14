@@ -35,11 +35,12 @@ def test_catalog_counts(client: TestClient):
     resp = client.get("/lottery")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["count"] == 112
+    assert body["count"] == 111
     assert body["count"] == len(LOTTERY_TABLE)
     # 主数据源分布：168yyy（gid 体系）、pks（168 线路池）、chuanqiking、apiote122
-    assert body["by_source"] == {"yyy168": 16, "pks": 4, "chuanqiking": 28, "apiote122": 64}
-    assert body["available"] == 34
+    # 「幸运飞艇」(pks 10057) 与 168yyy 的「168幸运飞艇」(g171) 为同一彩种，已合并
+    assert body["by_source"] == {"yyy168": 16, "pks": 3, "chuanqiking": 28, "apiote122": 64}
+    assert body["available"] == 33
 
 
 def test_catalog_row_shape(client: TestClient):

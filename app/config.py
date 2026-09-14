@@ -91,9 +91,11 @@ class Settings(BaseSettings):
     http_max_connections: int = 100
     http_max_keepalive_connections: int = 20
 
-    # ---- 进程内缓存 TTL（秒）----
+    # ---- 进程内缓存（秒）----
+    # 过期时间优先取「下一期开奖时间」，以下 TTL 仅作缺失/异常时的回退
     cache_latest_ttl: float = 3.0
-    cache_history_ttl: float = 30.0
+    # 单条缓存最长存活时间：防御上游下期时间异常（如旧数据彩种 next 给到数年后）
+    cache_max_ttl: float = 300.0
     cache_maxsize: int = 2048
 
     # ---- 历史条数 ----
@@ -138,7 +140,7 @@ LOTTERY_TABLE: tuple[LotteryConfig, ...] = (
     LotteryConfig("g132", "澳门幸运8", "yyy168", "yyy168", gid=132, category="快乐十分"),
     LotteryConfig("cqxync", "重庆幸运农场", "yyy168", "yyy168", gid=135, lot_code=10009, upstream_code="cqxync", category="快乐十分", note="apiote122 有两个编号：10009/cqxync、10050/cqqxc"),
     LotteryConfig("jisuft", "极速飞艇", "yyy168", "yyy168", gid=170, lot_code=10035, upstream_code="jisuft", category="赛车", note="chuanqiking 有「168极速飞艇」19"),
-    LotteryConfig("g171", "168幸運飛艇", "yyy168", "yyy168", gid=171, category="赛车", note="chuanqiking 有「168幸运飞艇」18"),
+    LotteryConfig("g171", "168幸运飞艇", "yyy168", "yyy168", gid=171, lot_code=10057, upstream_code="xingyft", category="赛车", note="即 168 线路池 pks 的「幸运飞艇」10057 / chuanqiking「168幸运飞艇」18"),
     LotteryConfig("jisusc", "极速赛车", "yyy168", "yyy168", gid=172, lot_code=10037, upstream_code="jisusc", category="赛车", note="chuanqiking 有「168极速赛车」16"),
     LotteryConfig("aozxy10", "澳洲幸运10", "yyy168", "yyy168", gid=175, lot_code=10012, upstream_code="aozxy10", category="赛车", note="168 线路池 pks 亦提供 10012"),
     LotteryConfig("g200", "极速六合彩", "yyy168", "yyy168", gid=200, category="六合彩"),
@@ -148,7 +150,6 @@ LOTTERY_TABLE: tuple[LotteryConfig, ...] = (
 
     # ===== 168 线路池 pks =====
     LotteryConfig("pk10", "北京PK10", "pks", "pks", lot_code=10001, upstream_code="pk10", category="PK10/飞艇/赛车", note="对应 168yyy 的「北京赛车(PK10)」107"),
-    LotteryConfig("xingyft", "幸运飞艇", "pks", "pks", lot_code=10057, upstream_code="xingyft", category="PK10/飞艇/赛车", note="chuanqiking 有「168幸运飞艇」18"),
     LotteryConfig("sgAirship", "SG飞艇", "pks", "pks", lot_code=10058, upstream_code="sgAirship", category="PK10/飞艇/赛车"),
     LotteryConfig("uklotto10", "英国乐透10", "pks", "pks", lot_code=10079, upstream_code="uklotto10", category="PK10/飞艇/赛车"),
 
@@ -182,7 +183,7 @@ LOTTERY_TABLE: tuple[LotteryConfig, ...] = (
     LotteryConfig("sglh", "香港六合彩", "chuanqiking", "chuanqiking", lot_code=4, upstream_code="sglh", category="六合彩", status="unsupported"),
     LotteryConfig("amlh", "澳门六合彩", "chuanqiking", "chuanqiking", lot_code=5, upstream_code="amlh", category="六合彩", status="unsupported", note="168yyy 有「澳门六合彩5分」201"),
     LotteryConfig("jssc168", "168极速赛车", "chuanqiking", "chuanqiking", lot_code=16, upstream_code="jssc168", category="赛车", status="unsupported", note="168yyy/apiote122 有「极速赛车」172 / 10037"),
-    LotteryConfig("syft168", "168幸运飞艇", "chuanqiking", "chuanqiking", lot_code=18, upstream_code="syft168", category="赛车", status="unsupported", note="168yyy 有「168幸運飛艇」171；apiote122 有「幸运飞艇」10057"),
+    LotteryConfig("syft168", "168幸运飞艇", "chuanqiking", "chuanqiking", lot_code=18, upstream_code="syft168", category="赛车", status="unsupported", note="与 g171「168幸运飞艇」为同一彩种（168yyy 171 / pks 10057）"),
     LotteryConfig("jsft168", "168极速飞艇", "chuanqiking", "chuanqiking", lot_code=19, upstream_code="jsft168", category="赛车", status="unsupported", note="168yyy/apiote122 有「极速飞艇」170 / 10035"),
     LotteryConfig("bk11x5", "曼谷11选5", "chuanqiking", "chuanqiking", lot_code=21, upstream_code="bk11x5", category="11选5系列", status="unsupported"),
     LotteryConfig("hg28wfc", "韩国28五分彩", "chuanqiking", "chuanqiking", lot_code=24, upstream_code="hg28wfc", category="时时彩", status="unsupported"),

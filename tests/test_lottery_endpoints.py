@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -157,30 +159,54 @@ def test_history_limit_1(client: TestClient, stub):
 
 
 # --------------------------------------------------------------------------- #
-# TTL 缓存
+# TLRU 缓存（过期时间 = 下一期开奖时间）
 # --------------------------------------------------------------------------- #
-def test_latest_is_cached_for_3_seconds(client: TestClient, stub):
+def test_latest_is_cached_until_next_draw(client: TestClient, stub):
+    """样例的下期时间已是过去 -> 回退固定 TTL（3 秒），窗口内命中缓存。"""
     fake = stub(FakeAdapter())
     client.get("/lottery/aozxy5/latest")
     client.get("/lottery/aozxy5/latest")
     assert fake.latest_calls == 1
 
 
-def test_history_is_cached_per_limit(client: TestClient, stub):
+def _ts(offset_seconds: float, base: float) -> str:
+    return datetime.fromtimestamp(int(base) + offset_seconds).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def test_expires_at_uses_future_next_draw():
+    now = time.time()
+    assert lottery_service._expires_at(_ts(60, now), 3.0, now) == int(now) + 60
+
+
+def test_expires_at_falls_back_when_next_missing_or_past():
+    now = time.time()
+    # 缺失 / 已过期 / 解析失败 -> 回退固定 TTL
+    assert lottery_service._expires_at(None, 3.0, now) == now + 3.0
+    assert lottery_service._expires_at(_ts(-60, now), 3.0, now) == now + 3.0
+    assert lottery_service._expires_at("not-a-date", 3.0, now) == now + 3.0
+
+
+def test_expires_at_capped_by_max_ttl():
+    """上游下期时间异常远（如旧数据彩种 next 到数年后）时封顶 cache_max_ttl。"""
+    now = time.time()
+    assert lottery_service._expires_at(_ts(10_000, now), 3.0, now) == now + lottery_service._settings.cache_max_ttl
+
+
+def test_history_is_not_cached(client: TestClient, stub):
+    """history 每次实时取上游，不缓存。"""
     fake = stub(FakeAdapter(history=[SAMPLE_DRAW] * 100))
     client.get("/lottery/aozxy5/history", params={"limit": 10})
     client.get("/lottery/aozxy5/history", params={"limit": 10})
-    assert fake.history_calls == 1
-    # 不同 limit 是不同缓存键
-    client.get("/lottery/aozxy5/history", params={"limit": 20})
     assert fake.history_calls == 2
 
 
-def test_latest_and_history_caches_are_independent(client: TestClient, stub):
+def test_only_latest_is_cached(client: TestClient, stub):
     fake = stub(FakeAdapter())
     client.get("/lottery/aozxy5/latest")
+    client.get("/lottery/aozxy5/latest")
     client.get("/lottery/aozxy5/history")
-    assert (fake.latest_calls, fake.history_calls) == (1, 1)
+    client.get("/lottery/aozxy5/history")
+    assert (fake.latest_calls, fake.history_calls) == (1, 2)
 
 
 # --------------------------------------------------------------------------- #
